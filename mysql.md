@@ -164,11 +164,17 @@ mysql> select unix_timestamp(now());
 
 不可以取空值(null)，不可以重复，且一个表中只能有一个主键。
 
-innodb要求表必须具有主键，如果没有主键，那么它会默认添加一列整型字段作为主键，当然这和它的索引底层实现有关，后续介绍。
+innodb要求表必须具有主键，如果没有主键，那么它会默认添加一列整型字段作为主键，当然这和它的索引底层实现有关，后续介绍。、
+
+innodb引擎下，主键会默认创建主键索引。
 
 #### 自增键约束(auto_increment)
 
 大部分的整型主键都会设置为自增键，从而可以不用手动设置主键id，因为mysql会自动地顺序生成主键。
+
+注：自增键不会复用之前被删除的id号，而是id号一直往后加，直到加到数据类型上限后，就会显示插入操作失败。
+
+innodb引擎下，唯一键会默认创建唯一键索引。
 
 #### 唯一键约束(unique)
 
@@ -237,7 +243,7 @@ Default: NULL
 
 ```
 
-ps：mysql中`:`表示以表示形式显示结果，'\G'表示以一行一行的形式显示
+ps：mysql中`;`表示以表的形式显示结果，'\G'表示以一行一行的形式显示
 
 # 表的设计原则
 
@@ -391,3 +397,204 @@ ps：mysql中`:`表示以表示形式显示结果，'\G'表示以一行一行的
 项目开发经验：
 
 一般情况下，满足第三范式就够了，不然表太多了，会导致sql查询太复杂且效率底下。而且有时为了保证查询效率，会故意保留一些数据冗余。
+
+# sql语句基础
+
+#### sql概述
+
+建议：sql关键字大写，库名表名等小写。
+
+sql是一种结构话查询语句，这是关系型数据库的通用语言。可以分为三个类别：
+
+1. DDL(Data Definition Languages)语句：数据定义语言，定义了数据库、表、列、索引等数据库对象，常用关键字有create、drop、alter等。
+2. DML(Data Manipulation Languages)语句：数据操作语句，增删查改操作，并检查数据完整性，常用关键字有insert、delete、update、select等。
+3. DCL(Data Control Language)语句：数据控制语句，控制不同的访问级别，定义了数据库、表、列等的访问权限和安全级别，常用关键字有grant、revoke等。
+
+#### 库操作
+
+| 功能             | sql语句                   |
+| ---------------- | ------------------------- |
+| 显示所有的数据库 | `show databases;`         |
+| 选择数据库       | `use <库名>;`             |
+| 创建数据库       | `create database <库名>;` |
+| 删除数据库       | `drop database <库名>;`   |
+
+#### 表操作
+
+创建一个表需要：字段的名称 + 数据类型 + 完整性约束条件。如下
+
+```mysql
+create table test(
+    id int unsigned primary key auto_increment,
+    name varchar(50) unique not null,
+    sex enum('M', 'W') not null
+)engine=INNODB default charset=utf8;
+```
+
+| 功能                                 | sql语句                     |
+| ------------------------------------ | --------------------------- |
+| 查看表结构                           | `desc <表名>;`              |
+| 删除表（删除后表已经消失）           | `drop table <表名>;`        |
+| 查看创建表的sql语句                  | `show create table <表名>;` |
+| 查看库中所有的表（需要先选择一个库） | `show tables;`              |
+
+注：磁盘存储表时会存储表的结构、表的记录和表的索引。
+
+#### 增删查改操作
+
+注：无论何时少用`*`，列出想要操作的所有字段是个好习惯。
+
+**插入操作**
+
+```mysql
+insert into <表名>(<字段>) values(<值1>), (<值2>)...;
+insert into user(name, age) values('tom', 11), ('helen', 22);  # 需要插入多条记录时使用逗号分隔
+```
+
+多次insert和一次insert插入多行记录的区别（可以肯定的是执行结果是一样的）：
+
+```mysql
+insert into user(age) values(11);
+insert into user(age) values(12);
+
+insert into user(age) values(11), (12);
+```
+
+一次sql的交互需要如下三个步骤：
+
+1. mysql client和mysql server进行tcp三次握手
+2. client发送sql语句到server并等待处理结果
+3. 结果返回后，client和server进行tcp四次挥手断开连接
+
+前者相当于进行了两次三次握手四次挥手，而后者只进行了一次。显然后者效率更高。由于每次sql都会导致tcp的连接和断开，所以项目中常会使用连接池来加速sql的效率。
+
+**修改操作**
+
+```mysql
+update <表名> set <字段>=<新值> where <条件过滤>;
+update user set age=22 where name='tom';
+```
+
+**删除操作**
+
+```mysql
+delete from <表名> where <条件过滤>;
+delete from user where age=22;
+```
+
+注：delete只是删除了表的数据，表仍然存在。但是drop会删除整个表。
+
+**查询操作**（单表查询）
+
+```mysql
+select <字段> from <表名> where <条件过滤>;
+select id, name from user where age=22;
+
+# 使用distinct去重
+select distinct name from user;  # 不会出现重复的name
+
+# union合并两个select的结果，union默认去重（无需写distinct），union all不去重
+select name from user where age=11 
+union all
+select name from user where age=22;
+```
+
+网上有些文章写or用不到索引，其实是有可能用到的，因为mysql有可能会做优化，把or两边的条件优化为两个select的合并结果，那么这样子的话就可以用到索引了。
+
+```mysql
+# 如下语句可以被mysql优化为上面union all示例
+select name from user where age=11 or age=22;
+```
+
+#### explain
+
+explain可以用于查询sql语句的执行效率。后续笔记会经常使用explain。
+
+注：explain无法查看mysql的优化内容，所以不能一味相信explain🙌就比如上述的or内容，explain就无法感知。
+
+#### limit分页查询
+
+```mysql
+# M为偏移量，不写偏移量的话就从0开始，N表示显示的行数
+select <字段> from <表名> limit M, N;  # 推荐该写法
+select <字段> from <表名> limit N offset M; # 和上等价
+```
+
+如果明确知道自己想要几行记录，那么使用limit可以有效增加查询效率，毕竟不用全表扫描了。（没有索引的情况下）
+
+实际项目中limit的使用频率是很高的，比如电商系统就需要分页显示商品记录。假设页的编号是pagenum(1,2...)，每一页有linenum条记录。那么查询语句如下：
+
+```
+select * from user limit (pagenum-1)*linenum, linenum;
+```
+
+该语句可以完成查询功能，但是效率不平均，越往后的页查询越慢。因为越往后的页偏移量越大，那么相当于也要扫描这些页，所以效率就低在偏移量这里了。
+
+实际项目的做法是在有索引的字段（常为主键id）加个过滤条件，利用该过滤条件从而不再使用偏移量来进行偏移：
+
+```mysql
+# 1000是前一页的最后一个id值
+select * from user where id>1000 limit linenum;
+```
+
+#### order by
+
+默认升序，asc表示升序，desc表示降序：
+
+```mysql
+SELECT * FROM user ORDER BY name;      # 升序
+SELECT * FROM user ORDER BY name ASC;  # 升序
+SELECT * FROM user ORDER BY name DESC; # 降序
+```
+
+可以按照多个字段进行排序，排序规则为按照前一个字段排序，若前一个字段值相同就按照第二个字段排序，以此类推：
+
+```mysql
+SELECT * FROM user ORDER BY name,age;  # 只有name相同时才会按照age排序
+```
+
+**order by性能**
+
+user表的内容如下，只有id和name具有索引：
+
+```mysql
++-------+---------------+------+-----+---------+----------------+
+| Field | Type          | Null | Key | Default | Extra          |
++-------+---------------+------+-----+---------+----------------+
+| id    | int unsigned  | NO   | PRI | NULL    | auto_increment |
+| name  | varchar(50)   | NO   | UNI | NULL    |                |
+| age   | int unsigned  | NO   |     | NULL    |                |
+| sex   | enum('m','w') | NO   |     | m       |                |
++-------+---------------+------+-----+---------+----------------+
+```
+
+使用explain来进行分析，可以发现如下前两句都涉及到了filesort文件排序（外排序），这是查询操作不能允许的。可以发现的是order by后的字段和select查询的字段都必须具有索引才可以使用到索引。所以每个字段的使用都很关键，其实大部分关键字都是如此。后续索引章节再来仔细详解。
+
+```mysql
+mysql> explain select * from user order by age;
+
+mysql> explain select * from user order by name;
+
+mysql> explain select name from user order by name;
+```
+
+#### group by
+
+假设需要对一个数据进行查重，完全可以使用distinct。但是加入需要进行统计操作，distinct就无法实现该功能了。这时就需要group by了，group by一般就是配合一些聚合函数来进行一些统计操作。过滤条件可以在其后添加having。
+
+统计年龄大于10岁的不同年龄段的人，就可以使用该sql语句`select age, count(age) number from user group by age having age>10;`
+
+**过滤：**
+
+group by的过滤可以使用having和where，区别如下：
+
+- where需要在分组前进行过滤（因为where可以用到索引，所以建议使用where）
+- having需要在分组后进行过滤
+
+```mysql
+# 如下等价
+select * from user group by age having age>10;
+select * from user where age>10 group by age;
+```
+
+group by性能优化类似于order by，这里不做讲解。
