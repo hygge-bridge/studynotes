@@ -598,3 +598,90 @@ select * from user where age>10 group by age;
 ```
 
 group by性能优化类似于order by，这里不做讲解。
+
+# 连接查询
+
+之前讲的都是单表查询，如果表之间设计多个表，那么就需要连接查询了。
+
+#### 好处
+
+当发送一个sql的时候，mysql server会做一些校验工作。并且需要进行tcp三次握手四次挥手。如果查询多个表时分开查询然后合并结果，那么上述操作就需要进行多次，这显示是资源的浪费。通过联合查询查询可以就可以有效减少三次握手四次挥手以及校验工作的次数。但是如果联合查询的表设计太多了，那么效率其实也不高。
+
+#### 分类
+
+- 内连接查询(inner join)：查询两个表共有的内容
+- 外连接查询(outer join)：
+  - 左外连接查询(left outer join)：查询左表的所有部分
+  - 右外连接查询(right outer join)：查询右表的所有内容
+
+注：outer可以省略不写
+
+#### 内连接查询
+
+内连接查询的功能其实通过from多张表来实现，但是后者可读性太差，所以建议使用内连接查询。
+
+**举例**
+
+假设此时有三张表：
+
+```
+学生表(student): uid name age sex
+课程表(course): cid cname credit
+考试结果表(exame): uid cid time score
+```
+
+查询指定学生在指定课程下考试的详细信息，sql如下：
+
+```sql
+# 第一个张表必须是和后面两张表有关联关系的，所以这里必须是exame表放在第一位。
+
+SELECT e.time, e.score, s.uid, s.name, s.age, s.sex, c.cid, c.cname, c.credit 
+FROM exame
+INNER JOIN student s ON s.uid=e.uid
+INNER JOIN course c ON c.cid=e.cid
+WHERE c.cid=1 and s.uid=1;
+```
+
+此处过滤条件放在where或者on后面都可以，通过explain查看可以知道他们的效果是一样的，mysql会做优化的。后续外连接会有不同，需要注意。
+
+**查询过程**：
+
+on后的过滤条件，内连接会对小表进行全表扫描，然后将扫描得到的字段去大表搜索。所以说一定要对大表添加索引，对小表添加索引没有意义。mysql将数据量大的认定为大表，否则为小表。
+
+**内连接自己**
+
+前面limit部分提到了，使用带索引的字段去替换偏移量带来的性能损失。假如此时无法替换偏移量，那么就去检索带索引的字段，此时虽然用了偏移量，但是效率相对来说还是可以接受。然后通过内连接在进行一次检索。
+
+如下便是内连接自己的示例，如果直接`select *`那么效率可见很低，但是通过一个子查询从而创建了一个中间表，中间表全是主键id，然后通过索引再去检索user表，那么效率相比之前一定会高了。（中间表显然是小表，user表是大表）
+
+```sql
+SELECT a.* FROM user a INNER JOIN (SELECT id FROM user LIMIT 1000000,10) b on a.id=b.id;
+```
+
+#### 外连接查询
+
+对于一些数据不存在的检索场景，那么使用外连接是个不错的选择。
+
+比如查询没有参加考试的人的详细信息，其实该功能可以使用带in子查询来解决，但是毕竟not in很难命中索引，所以不考虑。通过外连接来实现
+
+```sql
+SELECT a.* FROM student a LEFT JOIN exame b ON a.uid=b.uid where b.uid IS NULL;
+```
+
+**查询过程**
+
+对于左外连接对左边是全表扫描，然后将得到的字段去检索右边表。右外连接同理。
+
+**过滤条件的位置**
+
+如下过滤条件被放置在不同的位置。前者结果和内连接相同，后者是预期的结果。因为先对b表进行了过滤，导致b表成为了小表，先被扫描了。这显然不是我们想要的。
+
+```sql
+SELECT a.* FROM student a LEFT JOIN exame b ON a.uid=b.uid where b.cid=3;
+
+SELECT a.* FROM student a LEFT JOIN exame b ON a.uid=b.uid on b.cid=3;
+```
+
+**外连接的过滤条件书写建议**
+
+连接条件都写在on后面，where过滤条件只写null值判断。
